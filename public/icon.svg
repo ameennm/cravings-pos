@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#22c55e"/>
+      <stop offset="100%" style="stop-color:#10b981"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="48" fill="url(#gradient)"/>
+  <g fill="#ffffff">
+    <path d="M128 60c-35.346 0-64 28.654-64 64 0 6.627 5.373 12 12 12s12-5.373 12-12c0-22.091 17.909-40 40-40s40 17.909 40 40c0 22.091-17.909 40-40 40-6.627 0-12 5.373-12 12v24c0 6.627 5.373 12 12 12s12-5.373 12-12v-13.271C163.661 197.024 192 163.287 192 124c0-35.346-28.654-64-64-64z"/>
+    <ellipse cx="128" cy="188" rx="16" ry="16"/>
+  </g>
+  <path d="M88 84c-4.418 0-8-3.582-8-8s3.582-8 8-8c4.418 0 8 3.582 8 8s-3.582 8-8 8z" fill="#ffffff" opacity="0.6"/>
+  <path d="M168 84c-4.418 0-8-3.582-8-8s3.582-8 8-8c4.418 0 8 3.582 8 8s-3.582 8-8 8z" fill="#ffffff" opacity="0.6"/>
+  <g fill="#ffffff" opacity="0.8">
+    <rect x="76" y="100" width="8" height="24" rx="4"/>
+    <rect x="172" y="100" width="8" height="24" rx="4"/>
+  </g>
+</svg>
