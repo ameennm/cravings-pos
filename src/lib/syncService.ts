@@ -124,14 +124,22 @@ export async function syncOrdersToSupabase(): Promise<{ success: number; failed:
                     sync_error: undefined,
                 })
 
-                // Update local order items
+                // Update local order items instead of deleting
+                // We keep the local ID temporarily but link it to the new Server Order ID
+                // When 'pullLatestFromSupabase' runs later, it will reconcile duplicates
                 for (const item of orderItems) {
-                    await db.orderItems.delete(item.id)
+                    await db.orderItems.update(item.id, {
+                        order_id: createdOrder.id,
+                        synced: true
+                    })
                 }
 
                 results.success++
             } catch (error) {
                 console.error('Failed to sync order:', localOrder.id, error)
+
+                // Notify user of sync failure
+                toast.error(`Sync failed for Order #${localOrder.order_number}`)
 
                 // Mark order with sync error
                 await db.orders.update(localOrder.id, {
@@ -374,7 +382,7 @@ export async function pullLatestFromSupabase(): Promise<void> {
             .limit(30)
 
         if (lastSync) {
-            closingsQuery = closingsQuery.gt('created_at', lastSync)
+            closingsQuery = closingsQuery.gt('submitted_at', lastSync)
         }
 
         const { data: rawClosingsData, error: closingError } = await closingsQuery
