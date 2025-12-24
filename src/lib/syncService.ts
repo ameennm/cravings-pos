@@ -84,15 +84,19 @@ export async function syncOrdersToSupabase(): Promise<{ success: number; failed:
                         payment_method: localOrder.payment_method,
                         created_by: localOrder.created_by,
                         created_at: localOrder.created_at,
-                    })
+                    } as any)
                     .select()
                     .single()
 
                 if (orderError) throw orderError
 
+                // FORCE CAST to avoid 'never' type error
+                const createdOrder = newOrder as any
+                if (!createdOrder) throw new Error('Failed to create order: No data returned')
+
                 // Create order items in Supabase
                 const itemsToInsert = orderItems.map(item => ({
-                    order_id: newOrder.id,
+                    order_id: createdOrder.id,
                     menu_item_id: item.menu_item_id,
                     quantity: item.quantity,
                     unit_price: item.unit_price,
@@ -105,7 +109,7 @@ export async function syncOrdersToSupabase(): Promise<{ success: number; failed:
                 if (itemsToInsert.length > 0) {
                     const { error: itemsError } = await supabase
                         .from('order_items')
-                        .insert(itemsToInsert)
+                        .insert(itemsToInsert as any)
 
                     if (itemsError) throw itemsError
                 }
@@ -114,8 +118,8 @@ export async function syncOrdersToSupabase(): Promise<{ success: number; failed:
                 await db.orders.delete(localOrder.id)
                 await db.orders.put({
                     ...localOrder,
-                    id: newOrder.id,
-                    order_number: newOrder.order_number,
+                    id: createdOrder.id,
+                    order_number: createdOrder.order_number,
                     synced: true,
                     sync_error: undefined,
                 })
@@ -160,8 +164,8 @@ export async function syncInventoryToSupabase(): Promise<{ success: number; fail
 
         for (const item of unsyncedItems) {
             try {
-                const { error } = await supabase
-                    .from('inventory_items')
+                // Force cast the client to allow update
+                const { error } = await (supabase.from('inventory_items') as any)
                     .update({
                         current_stock: item.current_stock,
                         updated_at: new Date().toISOString(),
@@ -241,68 +245,102 @@ export async function performFullSync(): Promise<void> {
 
 export async function pullLatestFromSupabase(): Promise<void> {
     try {
-        // Pull menu items
-        const { data: menuData } = await supabase
-            .from('menu_items')
-            .select('*')
-            .eq('is_available', true)
+        const lastSync = await getLastSyncTime()
+        console.log('📥 Pulling changes since:', lastSync || 'Beginning of time')
 
-        if (menuData) {
-            await db.menuItems.clear()
+        // ------------------------
+        // 1. Delta Sync: Menu Items
+        // ------------------------
+        let menuQuery = supabase.from('menu_items').select('*')
+
+        if (lastSync) {
+            menuQuery = menuQuery.gt('updated_at', lastSync)
+        } else {
+            // Initial load strategy: Get everything active
+            // (We don't filter is_available here to ensures we get everything structure-wise, 
+            // relying on UI to filter if needed, OR filter true for initial speed)
+            menuQuery = menuQuery.eq('is_available', true)
+        }
+
+        const { data: menuData, error: menuError } = await menuQuery
+        if (menuError) throw menuError
+
+        if (menuData && menuData.length > 0) {
+            console.log(`Received ${menuData.length} menu updates`)
+            // Upsert changes (Don't clear entire table!)
             await db.menuItems.bulkPut(
                 menuData.map((item: any) => ({
                     ...item,
                     synced: true,
-                    updated_at: new Date().toISOString(),
+                    updated_at: item.updated_at // Ensure we store the server timestamp
                 }))
             )
         }
 
-        // Pull inventory items
-        const { data: inventoryData } = await supabase
-            .from('inventory_items')
-            .select('*')
-            .eq('is_active', true)
+        // ------------------------
+        // 2. Delta Sync: Inventory
+        // ------------------------
+        let inventoryQuery = supabase.from('inventory_items').select('*')
 
-        if (inventoryData) {
-            // Keep unsynced local changes
-            const unsyncedItems = await db.inventoryItems.where('synced').equals(0).toArray()
-            await db.inventoryItems.clear()
+        if (lastSync) {
+            inventoryQuery = inventoryQuery.gt('updated_at', lastSync)
+        } else {
+            inventoryQuery = inventoryQuery.eq('is_active', true)
+        }
 
-            // Re-add server data
+        const { data: inventoryData, error: inventoryError } = await inventoryQuery
+        if (inventoryError) throw inventoryError
+
+        if (inventoryData && inventoryData.length > 0) {
+            console.log(`Received ${inventoryData.length} inventory updates`)
+            // Upsert changes
             await db.inventoryItems.bulkPut(
-                inventoryData.map((item: any) => {
-                    // Check if there's a local unsynced version
-                    const localItem = unsyncedItems.find(i => i.id === item.id)
-                    return {
-                        ...item,
-                        current_stock: localItem ? localItem.current_stock : item.current_stock,
-                        synced: localItem ? false : true,
-                        updated_at: new Date().toISOString(),
-                    }
-                })
+                inventoryData.map((item: any) => ({
+                    ...item,
+                    synced: true, // Mark incoming as synced
+                }))
             )
         }
 
-        // Pull recent orders (merge with local)
+        // ------------------------
+        // 3. Sync Recent Orders
+        // ------------------------
+        // For orders, we always want at least recents, but we can also check for updates
         const weekAgo = new Date()
         weekAgo.setDate(weekAgo.getDate() - 7)
 
-        const { data: ordersData } = await supabase
+        // Complex Logic: If we have lastSync, we want anything changed since then (could be old orders updated)
+        // BUT we also want to ensure we have recent context on load.
+        // Strategy: 
+        // - If lastSync exists: Fetch updated_at > lastSync
+        // - Else (Initial): Fetch created_at > weekAgo
+
+        let ordersQuery = supabase
             .from('orders')
             .select(`*, order_items (*)`)
-            .gte('created_at', weekAgo.toISOString())
             .order('created_at', { ascending: false })
 
-        if (ordersData) {
-            // Keep unsynced local orders
+        if (lastSync) {
+            ordersQuery = ordersQuery.gt('updated_at', lastSync)
+        } else {
+            ordersQuery = ordersQuery.gte('created_at', weekAgo.toISOString())
+        }
+
+        const { data: ordersData, error: ordersError } = await ordersQuery
+        if (ordersError) throw ordersError
+
+        if (ordersData && ordersData.length > 0) {
+            console.log(`Received ${ordersData.length} updated orders`)
+
+            // Keep unsynced local orders intact
             const unsyncedOrders = await db.orders.where('synced').equals(0).toArray()
             const unsyncedOrderIds = new Set(unsyncedOrders.map(o => o.id))
 
-            // Add/update synced orders from server
-            for (const order of ordersData) {
+            for (const order of ordersData as any[]) {
+                // Don't overwrite unsynced local work (conflict resolution strategy: Local Wins temporarily)
                 if (!unsyncedOrderIds.has(order.id)) {
                     const { order_items, ...orderData } = order
+
                     await db.orders.put({
                         ...orderData,
                         synced: true,
@@ -312,7 +350,7 @@ export async function pullLatestFromSupabase(): Promise<void> {
                         for (const item of order_items) {
                             await db.orderItems.put({
                                 ...item,
-                                menu_item_name: '',
+                                menu_item_name: '', // Populate if needed or join later
                                 synced: true,
                             })
                         }
@@ -321,47 +359,53 @@ export async function pullLatestFromSupabase(): Promise<void> {
             }
         }
 
-        // Pull daily closings with stock verifications
-        const { data: closingsData } = await supabase
+        // ------------------------
+        // 4. Daily Closings (Always fetch recent few for context)
+        // ------------------------
+        // Only fetch if we miss them or deep sync? 
+        // Let's keep the limit 30 strategy but utilize Delta if possible.
+        // For simplicity/safety on financial data, we pull the last 30 days always is safe, 
+        // but let's optimize:
+
+        let closingsQuery = supabase
             .from('daily_closing_logs')
             .select('*')
             .order('closing_date', { ascending: false })
             .limit(30)
 
-        if (closingsData) {
-            // Keep unsynced local closings
-            const unsyncedClosings = await db.dailyClosings.where('synced').equals(0).toArray()
-            const unsyncedClosingIds = new Set(unsyncedClosings.map(c => c.id))
+        if (lastSync) {
+            closingsQuery = closingsQuery.gt('created_at', lastSync)
+        }
 
+        const { data: rawClosingsData, error: closingError } = await closingsQuery
+        if (closingError) throw closingError
+        const closingsData = rawClosingsData as any[]
+
+        if (closingsData && closingsData.length > 0) {
+            // Upsert logs
             for (const closing of closingsData) {
-                if (!unsyncedClosingIds.has(closing.id)) {
-                    await db.dailyClosings.put({
-                        ...closing,
-                        synced: true,
-                    })
-                }
+                await db.dailyClosings.put({
+                    ...closing,
+                    synced: true
+                })
             }
-
-            // Fetch stock verifications
-            const closingIds = closingsData.map(c => c.id)
-            if (closingIds.length > 0) {
-                const { data: verificationsData } = await supabase
+            // Fetch verifications for these specific closings
+            const encodingIds = closingsData.map(c => c.id)
+            if (encodingIds.length > 0) {
+                const { data: verifications } = await supabase
                     .from('stock_verifications')
                     .select('*')
-                    .in('daily_closing_id', closingIds)
+                    .in('daily_closing_id', encodingIds)
 
-                if (verificationsData) {
-                    for (const verification of verificationsData) {
-                        await db.stockVerifications.put({
-                            ...verification,
-                            synced: true,
-                        })
-                    }
+                if (verifications) {
+                    await db.stockVerifications.bulkPut(
+                        verifications.map((v: any) => ({ ...v, synced: true }))
+                    )
                 }
             }
         }
 
-        console.log('Pulled latest data from Supabase')
+        console.log('✅ Pull from Supabase complete')
     } catch (error) {
         console.error('Pull from Supabase error:', error)
         throw error
