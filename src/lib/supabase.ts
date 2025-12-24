@@ -21,8 +21,9 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 // Create Supabase client - simple configuration for free tier
 // Fallback to placeholder to prevent crash on load (requests will fail gracefully)
-const validUrl = supabaseUrl || 'https://placeholder.supabase.co'
-const validKey = supabaseAnonKey || 'placeholder-key'
+// TEMPORARY FIX: Hardcoded credentials to bypass Vercel Env Var issues
+const validUrl = 'https://ihztawjrucezsnribabh.supabase.co'
+const validKey = 'sb_publishable_iDcLvNOdEuW6358KidZyZA_mY5wI51T'
 
 export const supabase = createClient<Database>(validUrl, validKey, {
     auth: {
