@@ -59,28 +59,49 @@ function App() {
         initialized.current = true
 
         const initAuth = async () => {
+            console.log('Starting auth init...')
             try {
-                const { data: { session } } = await supabase.auth.getSession()
+                // Create a timeout promise that rejects after 5 seconds
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Auth init timed out')), 5000)
+                )
 
-                if (session?.user) {
-                    const { data: profile } = await supabase
-                        .from('profiles')
-                        .select('*')
-                        .eq('id', session.user.id)
-                        .single()
+                // Actual auth logic wrapped in a promise
+                const authLogic = async () => {
+                    const { data: { session } } = await supabase.auth.getSession()
+                    console.log('Session check complete:', !!session)
 
-                    if (profile) {
-                        setUser(profile)
+                    if (session?.user) {
+                        const { data: profile } = await supabase
+                            .from('profiles')
+                            .select('*')
+                            .eq('id', session.user.id)
+                            .single()
+
+                        console.log('Profile fetch complete:', !!profile)
+
+                        if (profile) {
+                            setUser(profile)
+                        } else {
+                            setUser(null)
+                        }
                     } else {
                         setUser(null)
                     }
-                } else {
-                    setUser(null)
                 }
+
+                // Race the auth logic against the timeout
+                await Promise.race([authLogic(), timeoutPromise])
+
             } catch (error) {
-                console.error('Auth init error:', error)
-                setUser(null)
+                console.error('Auth init error or timeout:', error)
+                // Even on error/timeout, we must stop loading so the user can interact
+                // If they are actually logged in, the auth listener will pick it up later
+                if (useAuthStore.getState().isLoading) {
+                    setLoading(false)
+                }
             } finally {
+                console.log('Auth init finished, stopping loading spinner')
                 setLoading(false)
             }
         }
