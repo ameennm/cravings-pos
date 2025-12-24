@@ -4,6 +4,7 @@ import path from 'path'
 
 // Web-only config (for Vercel deployment)
 export default defineConfig({
+    base: '/',
     plugins: [react()],
     resolve: {
         alias: {
