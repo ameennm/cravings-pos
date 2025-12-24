@@ -84,19 +84,15 @@ export async function syncOrdersToSupabase(): Promise<{ success: number; failed:
                         payment_method: localOrder.payment_method,
                         created_by: localOrder.created_by,
                         created_at: localOrder.created_at,
-                    } as any)
+                    })
                     .select()
                     .single()
 
                 if (orderError) throw orderError
 
-                // FORCE CAST to avoid 'never' type error
-                const createdOrder = newOrder as any
-                if (!createdOrder) throw new Error('Failed to create order: No data returned')
-
                 // Create order items in Supabase
                 const itemsToInsert = orderItems.map(item => ({
-                    order_id: createdOrder.id,
+                    order_id: newOrder.id,
                     menu_item_id: item.menu_item_id,
                     quantity: item.quantity,
                     unit_price: item.unit_price,
@@ -109,7 +105,7 @@ export async function syncOrdersToSupabase(): Promise<{ success: number; failed:
                 if (itemsToInsert.length > 0) {
                     const { error: itemsError } = await supabase
                         .from('order_items')
-                        .insert(itemsToInsert as any)
+                        .insert(itemsToInsert)
 
                     if (itemsError) throw itemsError
                 }
@@ -118,28 +114,20 @@ export async function syncOrdersToSupabase(): Promise<{ success: number; failed:
                 await db.orders.delete(localOrder.id)
                 await db.orders.put({
                     ...localOrder,
-                    id: createdOrder.id,
-                    order_number: createdOrder.order_number,
+                    id: newOrder.id,
+                    order_number: newOrder.order_number,
                     synced: true,
                     sync_error: undefined,
                 })
 
-                // Update local order items instead of deleting
-                // We keep the local ID temporarily but link it to the new Server Order ID
-                // When 'pullLatestFromSupabase' runs later, it will reconcile duplicates
+                // Update local order items
                 for (const item of orderItems) {
-                    await db.orderItems.update(item.id, {
-                        order_id: createdOrder.id,
-                        synced: true
-                    })
+                    await db.orderItems.delete(item.id)
                 }
 
                 results.success++
             } catch (error) {
                 console.error('Failed to sync order:', localOrder.id, error)
-
-                // Notify user of sync failure
-                toast.error(`Sync failed for Order #${localOrder.order_number}`)
 
                 // Mark order with sync error
                 await db.orders.update(localOrder.id, {
@@ -172,8 +160,8 @@ export async function syncInventoryToSupabase(): Promise<{ success: number; fail
 
         for (const item of unsyncedItems) {
             try {
-                // Force cast the client to allow update
-                const { error } = await (supabase.from('inventory_items') as any)
+                const { error } = await supabase
+                    .from('inventory_items')
                     .update({
                         current_stock: item.current_stock,
                         updated_at: new Date().toISOString(),
@@ -253,102 +241,68 @@ export async function performFullSync(): Promise<void> {
 
 export async function pullLatestFromSupabase(): Promise<void> {
     try {
-        const lastSync = await getLastSyncTime()
-        console.log('📥 Pulling changes since:', lastSync || 'Beginning of time')
+        // Pull menu items
+        const { data: menuData } = await supabase
+            .from('menu_items')
+            .select('*')
+            .eq('is_available', true)
 
-        // ------------------------
-        // 1. Delta Sync: Menu Items
-        // ------------------------
-        let menuQuery = supabase.from('menu_items').select('*')
-
-        if (lastSync) {
-            menuQuery = menuQuery.gt('updated_at', lastSync)
-        } else {
-            // Initial load strategy: Get everything active
-            // (We don't filter is_available here to ensures we get everything structure-wise, 
-            // relying on UI to filter if needed, OR filter true for initial speed)
-            menuQuery = menuQuery.eq('is_available', true)
-        }
-
-        const { data: menuData, error: menuError } = await menuQuery
-        if (menuError) throw menuError
-
-        if (menuData && menuData.length > 0) {
-            console.log(`Received ${menuData.length} menu updates`)
-            // Upsert changes (Don't clear entire table!)
+        if (menuData) {
+            await db.menuItems.clear()
             await db.menuItems.bulkPut(
                 menuData.map((item: any) => ({
                     ...item,
                     synced: true,
-                    updated_at: item.updated_at // Ensure we store the server timestamp
+                    updated_at: new Date().toISOString(),
                 }))
             )
         }
 
-        // ------------------------
-        // 2. Delta Sync: Inventory
-        // ------------------------
-        let inventoryQuery = supabase.from('inventory_items').select('*')
+        // Pull inventory items
+        const { data: inventoryData } = await supabase
+            .from('inventory_items')
+            .select('*')
+            .eq('is_active', true)
 
-        if (lastSync) {
-            inventoryQuery = inventoryQuery.gt('updated_at', lastSync)
-        } else {
-            inventoryQuery = inventoryQuery.eq('is_active', true)
-        }
+        if (inventoryData) {
+            // Keep unsynced local changes
+            const unsyncedItems = await db.inventoryItems.where('synced').equals(0).toArray()
+            await db.inventoryItems.clear()
 
-        const { data: inventoryData, error: inventoryError } = await inventoryQuery
-        if (inventoryError) throw inventoryError
-
-        if (inventoryData && inventoryData.length > 0) {
-            console.log(`Received ${inventoryData.length} inventory updates`)
-            // Upsert changes
+            // Re-add server data
             await db.inventoryItems.bulkPut(
-                inventoryData.map((item: any) => ({
-                    ...item,
-                    synced: true, // Mark incoming as synced
-                }))
+                inventoryData.map((item: any) => {
+                    // Check if there's a local unsynced version
+                    const localItem = unsyncedItems.find(i => i.id === item.id)
+                    return {
+                        ...item,
+                        current_stock: localItem ? localItem.current_stock : item.current_stock,
+                        synced: localItem ? false : true,
+                        updated_at: new Date().toISOString(),
+                    }
+                })
             )
         }
 
-        // ------------------------
-        // 3. Sync Recent Orders
-        // ------------------------
-        // For orders, we always want at least recents, but we can also check for updates
+        // Pull recent orders (merge with local)
         const weekAgo = new Date()
         weekAgo.setDate(weekAgo.getDate() - 7)
 
-        // Complex Logic: If we have lastSync, we want anything changed since then (could be old orders updated)
-        // BUT we also want to ensure we have recent context on load.
-        // Strategy: 
-        // - If lastSync exists: Fetch updated_at > lastSync
-        // - Else (Initial): Fetch created_at > weekAgo
-
-        let ordersQuery = supabase
+        const { data: ordersData } = await supabase
             .from('orders')
             .select(`*, order_items (*)`)
+            .gte('created_at', weekAgo.toISOString())
             .order('created_at', { ascending: false })
 
-        if (lastSync) {
-            ordersQuery = ordersQuery.gt('updated_at', lastSync)
-        } else {
-            ordersQuery = ordersQuery.gte('created_at', weekAgo.toISOString())
-        }
-
-        const { data: ordersData, error: ordersError } = await ordersQuery
-        if (ordersError) throw ordersError
-
-        if (ordersData && ordersData.length > 0) {
-            console.log(`Received ${ordersData.length} updated orders`)
-
-            // Keep unsynced local orders intact
+        if (ordersData) {
+            // Keep unsynced local orders
             const unsyncedOrders = await db.orders.where('synced').equals(0).toArray()
             const unsyncedOrderIds = new Set(unsyncedOrders.map(o => o.id))
 
-            for (const order of ordersData as any[]) {
-                // Don't overwrite unsynced local work (conflict resolution strategy: Local Wins temporarily)
+            // Add/update synced orders from server
+            for (const order of ordersData) {
                 if (!unsyncedOrderIds.has(order.id)) {
                     const { order_items, ...orderData } = order
-
                     await db.orders.put({
                         ...orderData,
                         synced: true,
@@ -358,7 +312,7 @@ export async function pullLatestFromSupabase(): Promise<void> {
                         for (const item of order_items) {
                             await db.orderItems.put({
                                 ...item,
-                                menu_item_name: '', // Populate if needed or join later
+                                menu_item_name: '',
                                 synced: true,
                             })
                         }
@@ -367,53 +321,47 @@ export async function pullLatestFromSupabase(): Promise<void> {
             }
         }
 
-        // ------------------------
-        // 4. Daily Closings (Always fetch recent few for context)
-        // ------------------------
-        // Only fetch if we miss them or deep sync? 
-        // Let's keep the limit 30 strategy but utilize Delta if possible.
-        // For simplicity/safety on financial data, we pull the last 30 days always is safe, 
-        // but let's optimize:
-
-        let closingsQuery = supabase
+        // Pull daily closings with stock verifications
+        const { data: closingsData } = await supabase
             .from('daily_closing_logs')
             .select('*')
             .order('closing_date', { ascending: false })
             .limit(30)
 
-        if (lastSync) {
-            closingsQuery = closingsQuery.gt('submitted_at', lastSync)
-        }
+        if (closingsData) {
+            // Keep unsynced local closings
+            const unsyncedClosings = await db.dailyClosings.where('synced').equals(0).toArray()
+            const unsyncedClosingIds = new Set(unsyncedClosings.map(c => c.id))
 
-        const { data: rawClosingsData, error: closingError } = await closingsQuery
-        if (closingError) throw closingError
-        const closingsData = rawClosingsData as any[]
-
-        if (closingsData && closingsData.length > 0) {
-            // Upsert logs
             for (const closing of closingsData) {
-                await db.dailyClosings.put({
-                    ...closing,
-                    synced: true
-                })
+                if (!unsyncedClosingIds.has(closing.id)) {
+                    await db.dailyClosings.put({
+                        ...closing,
+                        synced: true,
+                    })
+                }
             }
-            // Fetch verifications for these specific closings
-            const encodingIds = closingsData.map(c => c.id)
-            if (encodingIds.length > 0) {
-                const { data: verifications } = await supabase
+
+            // Fetch stock verifications
+            const closingIds = closingsData.map(c => c.id)
+            if (closingIds.length > 0) {
+                const { data: verificationsData } = await supabase
                     .from('stock_verifications')
                     .select('*')
-                    .in('daily_closing_id', encodingIds)
+                    .in('daily_closing_id', closingIds)
 
-                if (verifications) {
-                    await db.stockVerifications.bulkPut(
-                        verifications.map((v: any) => ({ ...v, synced: true }))
-                    )
+                if (verificationsData) {
+                    for (const verification of verificationsData) {
+                        await db.stockVerifications.put({
+                            ...verification,
+                            synced: true,
+                        })
+                    }
                 }
             }
         }
 
-        console.log('✅ Pull from Supabase complete')
+        console.log('Pulled latest data from Supabase')
     } catch (error) {
         console.error('Pull from Supabase error:', error)
         throw error
@@ -474,10 +422,106 @@ export async function createOrderOffline(
     items: Omit<LocalOrderItem, 'id' | 'order_id' | 'synced'>[]
 ): Promise<LocalOrder> {
     const now = new Date().toISOString()
-    const orderId = `local_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+
+    // When ONLINE: Create directly in Supabase for instant realtime broadcast
+    if (navigator.onLine) {
+        try {
+            console.log('🌐 Creating order in Supabase...')
+
+            // Create order in Supabase first
+            const { data: supabaseOrder, error: orderError } = await supabase
+                .from('orders')
+                .insert({
+                    customer_name: order.customer_name,
+                    table_number: order.table_number,
+                    bill_type: order.bill_type,
+                    subtotal: order.subtotal,
+                    tax_amount: order.tax_amount,
+                    discount_amount: order.discount_amount,
+                    total_amount: order.total_amount,
+                    status: 'pending',
+                    payment_method: order.payment_method,
+                    created_by: order.created_by,
+                } as any)
+                .select()
+                .single()
+
+            if (orderError) {
+                console.error('Supabase order insert error:', orderError)
+                throw orderError
+            }
+
+            console.log('✅ Order created in Supabase:', (supabaseOrder as any).order_number)
+
+            // Create order items in Supabase (note: menu_item_name stored locally only)
+            const supabaseItems = items.map(item => ({
+                order_id: (supabaseOrder as any).id,
+                menu_item_id: item.menu_item_id,
+                quantity: item.quantity,
+                unit_price: item.unit_price,
+                gst_percentage: item.gst_percentage,
+                gst_amount: item.gst_amount,
+                total_price: item.total_price,
+                notes: item.notes,
+            }))
+
+            if (supabaseItems.length > 0) {
+                const { error: itemsError } = await supabase
+                    .from('order_items')
+                    .insert(supabaseItems as any)
+
+                if (itemsError) {
+                    console.error('Supabase items insert error:', itemsError)
+                    throw itemsError
+                }
+            }
+
+            // Save to local DB with Supabase ID (for offline access)
+            const sbOrder = supabaseOrder as any
+            const localOrder: LocalOrder = {
+                id: sbOrder.id,
+                order_number: sbOrder.order_number,
+                customer_name: order.customer_name,
+                table_number: order.table_number,
+                bill_type: order.bill_type,
+                subtotal: order.subtotal,
+                tax_amount: order.tax_amount,
+                discount_amount: order.discount_amount,
+                total_amount: order.total_amount,
+                status: 'pending',
+                payment_method: order.payment_method,
+                created_by: order.created_by,
+                created_at: sbOrder.created_at,
+                updated_at: sbOrder.updated_at,
+                synced: true,
+            }
+
+            await db.orders.put(localOrder)
+
+            // Save items locally too
+            for (const item of items) {
+                await db.orderItems.add({
+                    id: `item_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                    order_id: sbOrder.id,
+                    ...item,
+                    synced: true,
+                })
+            }
+
+            console.log('✅ Order synced to Supabase! Realtime will broadcast to other clients.')
+            return localOrder
+
+        } catch (error) {
+            console.error('❌ Failed to create order in Supabase, falling back to offline:', error)
+            // Fall through to offline creation below
+        }
+    }
+
+
+    // When OFFLINE: Create locally with offline_ prefix
+    const orderId = `offline_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     const orderNumber = await generateOrderNumber()
 
-    // 1. Create Local Order Immediately (Optimistic UI)
     const newOrder: LocalOrder = {
         ...order,
         id: orderId,
@@ -494,28 +538,13 @@ export async function createOrderOffline(
     for (const item of items) {
         await db.orderItems.add({
             ...item,
-            id: `item_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            id: `offline_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
             order_id: orderId,
             synced: false,
         })
     }
 
-    console.log('⚡ Optimistic Order Created Locally:', orderNumber)
-
-    // 2. Trigger Background Sync if Online (Don't await this!)
-    if (navigator.onLine) {
-        // Run sync in background without blocking UI return
-        syncOrdersToSupabase().then(result => {
-            if (result.success > 0) {
-                console.log('✅ Background sync successful')
-                toast.success('Order sync complete')
-            }
-        }).catch(err => {
-            console.error('Background sync failed:', err)
-        })
-    }
-
-    // 3. Return immediately so UI feels instant
+    console.log('📴 Order created offline (will sync when online)')
     return newOrder
 }
 

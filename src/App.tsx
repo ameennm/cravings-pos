@@ -152,7 +152,7 @@ function App() {
         return unsubscribe
     }, [])
 
-    if (isLoading && !user) {
+    if (isLoading) {
         return <LoadingScreen />
     }
 
