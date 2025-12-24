@@ -4,7 +4,7 @@ import { Toaster } from 'react-hot-toast'
 import { supabase, subscribeToNetworkStatus } from '@/lib/supabase'
 import { useAuthStore } from '@/store'
 import { useInitializeLocalDb, useSyncStatus } from '@/lib/offlineHooks'
-import { setupAutoSync, performFullSync } from '@/lib/syncService'
+import { setupAutoSync } from '@/lib/syncService'
 
 // Layouts
 import { AuthLayout } from '@/components/layouts/AuthLayout'

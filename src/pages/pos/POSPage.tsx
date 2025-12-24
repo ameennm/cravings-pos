@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Search, ShoppingCart, Trash2, Plus, Minus, Receipt, X, FileText, WifiOff, ChevronUp } from 'lucide-react'
+import { Search, ShoppingCart, Trash2, Plus, Minus, Receipt, X, FileText, WifiOff } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useLocalMenuItems, useCreateLocalOrder, useSyncStatus } from '@/lib/offlineHooks'
 import { useCartStore, useAuthStore } from '@/store'
@@ -9,7 +9,6 @@ import {
     Button,
     Input,
     Card,
-    CardContent,
     CardHeader,
     CardTitle,
     Badge,
@@ -46,7 +45,7 @@ export function POSPage() {
 
     const [searchQuery, setSearchQuery] = useState('')
     const [selectedCategory, setSelectedCategory] = useState<string>('all')
-    const [printers, setPrinters] = useState<string[]>([])
+    const [_printers, setPrinters] = useState<string[]>([])
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [isMobile, setIsMobile] = useState(false)
     const [showMobileCart, setShowMobileCart] = useState(false)

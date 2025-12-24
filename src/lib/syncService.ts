@@ -5,7 +5,6 @@
 import { supabase } from './supabase'
 import {
     db,
-    addToSyncQueue,
     setLastSyncTime,
     getLastSyncTime,
     LocalOrder,
