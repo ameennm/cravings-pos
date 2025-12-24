@@ -5,6 +5,15 @@ import type { Database } from './database.types'
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
+// Debug logging
+console.log('Supabase Config Check:', {
+    hasUrl: !!supabaseUrl,
+    urlLength: supabaseUrl?.length || 0,
+    hasKey: !!supabaseAnonKey,
+    mode: import.meta.env.MODE,
+    allKeys: Object.keys(import.meta.env).filter(k => k.startsWith('VITE_'))
+})
+
 // Validate environment variables
 if (!supabaseUrl || !supabaseAnonKey) {
     console.error('Missing Supabase environment variables. Check your .env file or Vercel settings.')
