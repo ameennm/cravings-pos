@@ -108,9 +108,16 @@ export function DashboardLayout() {
 
 
     const handleLogout = async () => {
-        await supabase.auth.signOut()
-        setUser(null)
-        navigate('/login')
+        try {
+            await supabase.auth.signOut()
+        } catch (error) {
+            console.error('Logout error:', error)
+        } finally {
+            // Always clear local state and navigate, even if network fails
+            setUser(null)
+            localStorage.clear() // Clear any persisted state
+            navigate('/login')
+        }
     }
 
     // Get role display name
