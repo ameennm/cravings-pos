@@ -7,11 +7,12 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 
 // Validate environment variables
 if (!supabaseUrl || !supabaseAnonKey) {
-    throw new Error('Missing Supabase environment variables. Check your .env file.')
+    console.error('Missing Supabase environment variables. Check your .env file or Vercel settings.')
 }
 
 // Create Supabase client - simple configuration for free tier
-export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
+// Fallback to empty string to prevent crash on load (will fail on request)
+export const supabase = createClient<Database>(supabaseUrl || '', supabaseAnonKey || '', {
     auth: {
         persistSession: true,
         autoRefreshToken: true,
