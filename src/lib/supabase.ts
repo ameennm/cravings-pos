@@ -11,8 +11,11 @@ if (!supabaseUrl || !supabaseAnonKey) {
 }
 
 // Create Supabase client - simple configuration for free tier
-// Fallback to empty string to prevent crash on load (will fail on request)
-export const supabase = createClient<Database>(supabaseUrl || '', supabaseAnonKey || '', {
+// Fallback to placeholder to prevent crash on load (requests will fail gracefully)
+const validUrl = supabaseUrl || 'https://placeholder.supabase.co'
+const validKey = supabaseAnonKey || 'placeholder-key'
+
+export const supabase = createClient<Database>(validUrl, validKey, {
     auth: {
         persistSession: true,
         autoRefreshToken: true,
