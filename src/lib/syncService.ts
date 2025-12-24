@@ -422,106 +422,10 @@ export async function createOrderOffline(
     items: Omit<LocalOrderItem, 'id' | 'order_id' | 'synced'>[]
 ): Promise<LocalOrder> {
     const now = new Date().toISOString()
-
-    // When ONLINE: Create directly in Supabase for instant realtime broadcast
-    if (navigator.onLine) {
-        try {
-            console.log('🌐 Creating order in Supabase...')
-
-            // Create order in Supabase first
-            const { data: supabaseOrder, error: orderError } = await supabase
-                .from('orders')
-                .insert({
-                    customer_name: order.customer_name,
-                    table_number: order.table_number,
-                    bill_type: order.bill_type,
-                    subtotal: order.subtotal,
-                    tax_amount: order.tax_amount,
-                    discount_amount: order.discount_amount,
-                    total_amount: order.total_amount,
-                    status: 'pending',
-                    payment_method: order.payment_method,
-                    created_by: order.created_by,
-                } as any)
-                .select()
-                .single()
-
-            if (orderError) {
-                console.error('Supabase order insert error:', orderError)
-                throw orderError
-            }
-
-            console.log('✅ Order created in Supabase:', (supabaseOrder as any).order_number)
-
-            // Create order items in Supabase (note: menu_item_name stored locally only)
-            const supabaseItems = items.map(item => ({
-                order_id: (supabaseOrder as any).id,
-                menu_item_id: item.menu_item_id,
-                quantity: item.quantity,
-                unit_price: item.unit_price,
-                gst_percentage: item.gst_percentage,
-                gst_amount: item.gst_amount,
-                total_price: item.total_price,
-                notes: item.notes,
-            }))
-
-            if (supabaseItems.length > 0) {
-                const { error: itemsError } = await supabase
-                    .from('order_items')
-                    .insert(supabaseItems as any)
-
-                if (itemsError) {
-                    console.error('Supabase items insert error:', itemsError)
-                    throw itemsError
-                }
-            }
-
-            // Save to local DB with Supabase ID (for offline access)
-            const sbOrder = supabaseOrder as any
-            const localOrder: LocalOrder = {
-                id: sbOrder.id,
-                order_number: sbOrder.order_number,
-                customer_name: order.customer_name,
-                table_number: order.table_number,
-                bill_type: order.bill_type,
-                subtotal: order.subtotal,
-                tax_amount: order.tax_amount,
-                discount_amount: order.discount_amount,
-                total_amount: order.total_amount,
-                status: 'pending',
-                payment_method: order.payment_method,
-                created_by: order.created_by,
-                created_at: sbOrder.created_at,
-                updated_at: sbOrder.updated_at,
-                synced: true,
-            }
-
-            await db.orders.put(localOrder)
-
-            // Save items locally too
-            for (const item of items) {
-                await db.orderItems.add({
-                    id: `item_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-                    order_id: sbOrder.id,
-                    ...item,
-                    synced: true,
-                })
-            }
-
-            console.log('✅ Order synced to Supabase! Realtime will broadcast to other clients.')
-            return localOrder
-
-        } catch (error) {
-            console.error('❌ Failed to create order in Supabase, falling back to offline:', error)
-            // Fall through to offline creation below
-        }
-    }
-
-
-    // When OFFLINE: Create locally with offline_ prefix
-    const orderId = `offline_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+    const orderId = `local_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
     const orderNumber = await generateOrderNumber()
 
+    // 1. Create Local Order Immediately (Optimistic UI)
     const newOrder: LocalOrder = {
         ...order,
         id: orderId,
@@ -538,13 +442,28 @@ export async function createOrderOffline(
     for (const item of items) {
         await db.orderItems.add({
             ...item,
-            id: `offline_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            id: `item_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
             order_id: orderId,
             synced: false,
         })
     }
 
-    console.log('📴 Order created offline (will sync when online)')
+    console.log('⚡ Optimistic Order Created Locally:', orderNumber)
+
+    // 2. Trigger Background Sync if Online (Don't await this!)
+    if (navigator.onLine) {
+        // Run sync in background without blocking UI return
+        syncOrdersToSupabase().then(result => {
+            if (result.success > 0) {
+                console.log('✅ Background sync successful')
+                toast.success('Order sync complete')
+            }
+        }).catch(err => {
+            console.error('Background sync failed:', err)
+        })
+    }
+
+    // 3. Return immediately so UI feels instant
     return newOrder
 }
 
