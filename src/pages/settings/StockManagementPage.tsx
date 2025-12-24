@@ -127,7 +127,7 @@ export function StockManagementPage() {
                     await supabase.from('inventory_items').update({
                         ...itemData,
                         synced: undefined,
-                    }).eq('id', form.id)
+                    } as any).eq('id', form.id)
                     await db.inventoryItems.update(form.id, { synced: true })
                 }
 
@@ -149,7 +149,7 @@ export function StockManagementPage() {
                         minimum_stock: itemData.minimum_stock,
                         cost_per_unit: itemData.cost_per_unit,
                         is_active: itemData.is_active,
-                    }).select().single()
+                    } as any).select().single()
 
                     if (data && !error) {
                         await db.inventoryItems.delete(itemId)
@@ -219,7 +219,7 @@ export function StockManagementPage() {
             if (syncStatus.isOnline) {
                 await supabase.from('inventory_items').update({
                     current_stock: newStock,
-                }).eq('id', adjustStock.id)
+                } as any).eq('id', adjustStock.id)
             }
 
             toast.success(`Stock ${adjustType === 'add' ? 'added' : 'removed'} successfully`)

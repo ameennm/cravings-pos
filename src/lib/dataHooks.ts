@@ -222,7 +222,7 @@ export function useCreateOrder() {
             // Create order
             const { data: order, error: orderError } = await supabase
                 .from('orders')
-                .insert(orderData.order)
+                .insert(orderData.order as any)
                 .select()
                 .single()
 
@@ -231,12 +231,12 @@ export function useCreateOrder() {
             // Create order items
             const itemsWithOrderId = orderData.items.map((item) => ({
                 ...item,
-                order_id: order.id,
+                order_id: (order as any).id,
             }))
 
             const { error: itemsError } = await supabase
                 .from('order_items')
-                .insert(itemsWithOrderId)
+                .insert(itemsWithOrderId as any)
 
             if (itemsError) throw itemsError
 
@@ -277,10 +277,10 @@ export function useSyncPending() {
 
                         const itemsWithOrderId = op.data.items.map((item: any) => ({
                             ...item,
-                            order_id: order.id,
+                            order_id: (order as any).id,
                         }))
 
-                        await supabase.from('order_items').insert(itemsWithOrderId)
+                        await supabase.from('order_items').insert(itemsWithOrderId as any)
                     }
 
                     removePendingOperation(op.id)
